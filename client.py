@@ -2,17 +2,81 @@ import customtkinter as ctk
 import socket
 import threading
 import random
+import subprocess
 import sys
 import os
 
-# Adjust these to match your server’s address/port:
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
 
+class ListItemWindow(ctk.CTkToplevel):
+    """
+    A pop-up window for a Seller to enter item info:
+      - Item Name
+      - Description
+      - Start Price
+      - Duration (in seconds)
+      - A "List Item" button
+    """
+    def __init__(self, user_window):
+        super().__init__()
+        self.user_window = user_window  # reference to the parent user window
+        self.title("List an Item for Auction")
+        self.geometry("300x320")
+        self.resizable(False, False)
+
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Item Name
+        ctk.CTkLabel(main_frame, text="Item Name:").pack(anchor="w")
+        self.item_name_var = ctk.StringVar()
+        self.item_name_entry = ctk.CTkEntry(main_frame, textvariable=self.item_name_var)
+        self.item_name_entry.pack(pady=5, fill="x")
+
+        # Description
+        ctk.CTkLabel(main_frame, text="Description:").pack(anchor="w")
+        self.item_desc_var = ctk.StringVar()
+        self.item_desc_entry = ctk.CTkEntry(main_frame, textvariable=self.item_desc_var)
+        self.item_desc_entry.pack(pady=5, fill="x")
+
+        # Start Price
+        ctk.CTkLabel(main_frame, text="Start Price:").pack(anchor="w")
+        self.start_price_var = ctk.StringVar()
+        self.start_price_entry = ctk.CTkEntry(main_frame, textvariable=self.start_price_var)
+        self.start_price_entry.pack(pady=5, fill="x")
+
+        # Duration (in seconds)
+        ctk.CTkLabel(main_frame, text="Duration (in seconds):").pack(anchor="w")
+        self.duration_var = ctk.StringVar()
+        self.duration_entry = ctk.CTkEntry(main_frame, textvariable=self.duration_var)
+        self.duration_entry.pack(pady=5, fill="x")
+
+        # "List Item" button
+        self.submit_btn = ctk.CTkButton(main_frame, text="List Item", command=self.submit_item)
+        self.submit_btn.pack(pady=10)
+
+    def submit_item(self):
+        """Gather fields and send a LIST_ITEM request via the parent user window."""
+        item_name = self.item_name_var.get().strip()
+        item_desc = self.item_desc_var.get().strip()
+        start_price = self.start_price_var.get().strip()
+        duration = self.duration_var.get().strip()
+
+        if not item_name or not start_price or not duration:
+            self.user_window.add_log("ERROR: Please fill out all required fields.")
+            return
+
+        # Call the user window's send_list_item with 4 arguments.
+        self.user_window.send_list_item(item_name, item_desc, start_price, duration)
+        self.destroy()
+
+
 class UserWindow(ctk.CTkToplevel):
     """
-    A separate window that opens after a successful register/login.
-    Shows user info, a 'de-register' button, a log area, and a placeholder label.
+    A window for a logged-in or registered user.
+    - Shows user info, de-register button, log area.
+    - If seller, shows a "List Item" button and "Your Listed Items" area.
     """
     def __init__(self, master_app, name, role, udp_port, tcp_port):
         super().__init__()
@@ -23,12 +87,13 @@ class UserWindow(ctk.CTkToplevel):
         self.tcp_port = tcp_port
 
         self.title(f"User: {self.name}")
-        self.geometry("400x300")
+        self.geometry("400x400")
         self.resizable(False, False)
 
-        # Main frame
+        self.my_items = []  # track items listed by this user
+
         main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Info label
         info_text = (
@@ -41,46 +106,61 @@ class UserWindow(ctk.CTkToplevel):
         self.info_label.pack(pady=5)
 
         # De-register button
-        self.dereg_button = ctk.CTkButton(
-            main_frame,
-            text="De-register",
-            command=self.request_deregister
-        )
+        self.dereg_button = ctk.CTkButton(main_frame, text="De-register", command=self.request_deregister)
         self.dereg_button.pack(pady=5)
 
+        # If Seller, show "List Item" button
+        if self.role.lower() == "seller":
+            self.list_item_button = ctk.CTkButton(main_frame, text="List Item", command=self.open_list_item_window)
+            self.list_item_button.pack(pady=5)
+
         # Log area
-        self.log_text = ctk.CTkTextbox(main_frame, width=380, height=80)
+        self.log_text = ctk.CTkTextbox(main_frame, width=360, height=80)
         self.log_text.pack(pady=5)
 
-        # Placeholder label
-        placeholder_label = ctk.CTkLabel(
-            main_frame,
-            text="(Placeholder area for future features)"
-        )
-        placeholder_label.pack(pady=5)
+        # "Your Listed Items" area for sellers
+        if self.role.lower() == "seller":
+            ctk.CTkLabel(main_frame, text="Your Listed Items:").pack(anchor="w")
+            self.my_items_text = ctk.CTkTextbox(main_frame, width=360, height=80)
+            self.my_items_text.pack(pady=5)
+        else:
+            self.my_items_text = None
 
     def add_log(self, message: str):
-        """Append text to the user window's log area."""
         self.log_text.insert("end", message + "\n")
         self.log_text.see("end")
 
     def request_deregister(self):
-        """Ask the main app to send DE-REGISTER for this user."""
         self.master_app.send_deregister(self.name, self)
 
+    def open_list_item_window(self):
+        """Open the ListItemWindow pop-up for sellers."""
+        ListItemWindow(self)
+
+    def send_list_item(self, item_name, item_desc, start_price, duration):
+        """
+        Called by ListItemWindow.
+        Automatically uses self.name as the user name and passes self as the user window.
+        """
+        self.master_app.send_list_item(self.name, item_name, item_desc, start_price, duration, self)
+        self.add_log(f"Sent LIST_ITEM for item '{item_name}'.")
+
+    def add_my_item(self, item_name):
+        self.my_items.append(item_name)
+        if self.my_items_text:
+            self.my_items_text.insert("end", f"{item_name}\n")
+            self.my_items_text.see("end")
+
     def close_window(self):
-        """Close this user window."""
         self.destroy()
 
 
 class ClientApp(ctk.CTk):
     """
-    The main client window:
-      - Name entry
-      - Role dropdown
-      - Register, Login buttons
-      - A log area
-    Opens a UserWindow on successful register/login.
+    Main client window.
+    - Provides Name entry, Role dropdown, Register and Login buttons, and a log area.
+    - On successful register/login, opens a UserWindow.
+    - Automatically spawns the server as a subprocess.
     """
     def __init__(self):
         super().__init__()
@@ -88,15 +168,19 @@ class ClientApp(ctk.CTk):
         self.geometry("500x300")
         self.resizable(False, False)
 
+        # Automatically launch server.py as a subprocess
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        server_script = os.path.join(script_dir, "server.py")
+        self.server_process = subprocess.Popen([sys.executable, server_script])
+
         # Create a UDP socket for the entire client
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Bind to a random local UDP port
-        self.sock.bind((SERVER_IP, 0))
+        self.sock.bind((SERVER_IP, 0))  # bind to a random local UDP port
         self.local_udp_port = self.sock.getsockname()[1]
 
-        # A dictionary to keep track of outstanding requests: { rq#: {"type":..., "name":..., "role":..., "tcp_port":..., ...} }
+        # For tracking in-flight requests
         self.requests = {}
-        # A dictionary to track open user windows by name: { name: user_window }
+        # For tracking open user windows by name
         self.user_windows = {}
 
         # Start a background thread to listen for server responses
@@ -107,19 +191,16 @@ class ClientApp(ctk.CTk):
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Name entry
         ctk.CTkLabel(main_frame, text="Name:").pack(anchor="w")
         self.name_var = ctk.StringVar()
         self.name_entry = ctk.CTkEntry(main_frame, textvariable=self.name_var, width=200)
         self.name_entry.pack(pady=5)
 
-        # Role dropdown
         ctk.CTkLabel(main_frame, text="Role:").pack(anchor="w")
         self.role_var = ctk.StringVar(value="Buyer")
         self.role_menu = ctk.CTkOptionMenu(main_frame, values=["Buyer", "Seller"], variable=self.role_var)
         self.role_menu.pack(pady=5)
 
-        # Buttons (Register, Login)
         button_frame = ctk.CTkFrame(main_frame)
         button_frame.pack(pady=5)
 
@@ -129,30 +210,27 @@ class ClientApp(ctk.CTk):
         self.login_button = ctk.CTkButton(button_frame, text="Login", command=self.login_user)
         self.login_button.pack(side="left", padx=5)
 
-        # Log area
         self.log_text = ctk.CTkTextbox(main_frame, width=450, height=80)
         self.log_text.pack(pady=5)
 
-        # On close, clean up
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
-        """Close the main window."""
         self.listening = False
         self.sock.close()
-        # Close all user windows
         for w in list(self.user_windows.values()):
             w.close_window()
+        if self.server_process:
+            self.server_process.terminate()
         self.destroy()
 
     def add_log(self, msg: str):
-        """Append text to the main window's log area."""
         self.log_text.insert("end", msg + "\n")
         self.log_text.see("end")
 
-    # ---------------------------------------------------------------------
+    # -------------------------------
     # Sending Requests to the Server
-    # ---------------------------------------------------------------------
+    # -------------------------------
 
     def register_user(self):
         name = self.name_var.get().strip()
@@ -161,9 +239,7 @@ class ClientApp(ctk.CTk):
             self.add_log("ERROR: Name cannot be empty.")
             return
         rq = str(random.randint(1000, 9999))
-        tcp_port = str(random.randint(40001, 50000))  # random TCP port for demonstration
-        # Build REGISTER message
-        # Format: REGISTER RQ# Name Role IP UDP_port TCP_port
+        tcp_port = str(random.randint(40001, 50000))
         msg = f"REGISTER {rq} {name} {role} {SERVER_IP} {self.local_udp_port} {tcp_port}"
         self.sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
         self.requests[rq] = {"type": "register", "name": name, "role": role, "tcp_port": tcp_port}
@@ -182,19 +258,23 @@ class ClientApp(ctk.CTk):
         self.add_log(f"Sent LOGIN (RQ={rq}) for {name} ({role}).")
 
     def send_deregister(self, name, user_window):
-        """
-        Called by a user window to request de-registration.
-        We'll store the user_window so we can close it when we get the response.
-        """
         rq = str(random.randint(1000, 9999))
         msg = f"DE-REGISTER {rq} {name}"
         self.sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
         self.requests[rq] = {"type": "deregister", "name": name, "window": user_window}
         self.add_log(f"Sent DE-REGISTER (RQ={rq}) for {name}.")
 
-    # ---------------------------------------------------------------------
+    def send_list_item(self, user_name, item_name, item_desc, start_price, duration, user_window):
+        rq = str(random.randint(1000, 9999))
+        # Note: The username is now included in the message.
+        msg = f"LIST_ITEM {rq} {user_name} {item_name} {item_desc} {start_price} {duration}"
+        self.sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
+        self.requests[rq] = {"type": "list_item", "user_name": user_name, "item_name": item_name, "window": user_window}
+        self.add_log(f"Sent LIST_ITEM (RQ={rq}) for item '{item_name}'.")
+
+    # -------------------------------
     # Receiving Responses from the Server
-    # ---------------------------------------------------------------------
+    # -------------------------------
 
     def listen_server(self):
         while self.listening:
@@ -213,75 +293,59 @@ class ClientApp(ctk.CTk):
 
         cmd = parts[0].upper()
         rq = parts[1]
-        request_info = self.requests.pop(rq, None)  # remove from dictionary if present
+        request_info = self.requests.pop(rq, None)
 
         if cmd == "REGISTERED" and request_info is not None:
-            # e.g. "REGISTERED 1234"
             if request_info["type"] == "register":
                 name = request_info["name"]
                 role = request_info["role"]
                 tcp_port = request_info["tcp_port"]
                 self.open_user_window(name, role, tcp_port)
-            else:
-                # Not matching a register request (unlikely if everything is correct)
-                pass
 
         elif cmd == "REGISTER-DENIED":
-            # e.g. "REGISTER-DENIED 1234 Reason"
-            # request_info might have details
+            # Handle register failure if needed.
             pass
 
         elif cmd == "LOGIN_OK" and request_info is not None:
-            # e.g. "LOGIN_OK 1234"
             if request_info["type"] == "login":
                 name = request_info["name"]
                 role = request_info["role"]
-                # For demonstration, pick a random TCP port when login is successful
                 tcp_port = str(random.randint(40001, 50000))
                 self.open_user_window(name, role, tcp_port)
-            else:
-                pass
 
         elif cmd == "LOGIN_FAIL":
-            # e.g. "LOGIN_FAIL 1234 reason"
             pass
 
         elif cmd == "DE-REGISTERED" and request_info is not None:
-            # e.g. "DE-REGISTERED 1234"
             if request_info["type"] == "deregister":
                 name = request_info["name"]
                 user_window = request_info["window"]
-                # Close that user window
                 user_window.add_log("De-registered successfully. Closing window.")
                 user_window.close_window()
                 if name in self.user_windows:
                     del self.user_windows[name]
-            else:
-                pass
 
-        # If request_info is None, it means we didn't find a matching RQ, or we already popped it.
+        elif cmd == "ITEM_LISTED" and request_info is not None:
+            if request_info["type"] == "list_item":
+                item_name = request_info["item_name"]
+                user_window = request_info["window"]
+                user_window.add_log(f"Item '{item_name}' listed successfully.")
+                user_window.add_my_item(item_name)
 
-    # ---------------------------------------------------------------------
-    # Creating/Managing User Windows
-    # ---------------------------------------------------------------------
+        elif cmd == "LIST-DENIED" and request_info is not None:
+            if request_info["type"] == "list_item":
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "UnknownReason"
+                user_window = request_info["window"]
+                user_window.add_log(f"Item listing denied: {reason}")
 
     def open_user_window(self, name, role, tcp_port):
-        """Create and display a UserWindow for a newly registered/logged-in user."""
-        # If there's already a window for this user, close it or reuse it.
         if name in self.user_windows:
             self.user_windows[name].close_window()
             del self.user_windows[name]
 
-        uw = UserWindow(
-            master_app=self,
-            name=name,
-            role=role,
-            udp_port=self.local_udp_port,
-            tcp_port=tcp_port
-        )
+        uw = UserWindow(master_app=self, name=name, role=role, udp_port=self.local_udp_port, tcp_port=tcp_port)
         self.user_windows[name] = uw
         uw.add_log(f"Welcome {name} ({role})! Registered/Login success.")
-
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("System")

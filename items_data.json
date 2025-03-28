@@ -1,0 +1,16 @@
+[
+  {
+    "seller_name": "Becky",
+    "item_name": "apple",
+    "description": "green",
+    "start_price": "24",
+    "duration": "60"
+  },
+  {
+    "seller_name": "Becky",
+    "item_name": "banana",
+    "description": "yellow",
+    "start_price": "and",
+    "duration": "stuff"
+  }
+]
