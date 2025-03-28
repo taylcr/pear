@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Becky",
+    "role": "buyer",
+    "ip": "127.0.0.1",
+    "udp_port": "30818",
+    "tcp_port": "46684"
+  },
+  {
+    "name": "Taylor",
+    "role": "seller",
+    "ip": "127.0.0.1",
+    "udp_port": "38124",
+    "tcp_port": "46735"
+  },
+  {
+    "name": "Taylor",
+    "role": "seller",
+    "ip": "127.0.0.1",
+    "udp_port": "38124",
+    "tcp_port": "46735"
+  }
+]
