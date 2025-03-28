@@ -3,6 +3,8 @@ import socket
 import threading
 import json
 import os
+import random
+import time
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
@@ -10,12 +12,14 @@ MAX_USERS = 4
 
 USERS_DATA_FILE = "users_data.json"
 ITEMS_DATA_FILE = "items_data.json"
+SUBSCRIPTIONS_DATA_FILE = "subscriptions_data.json"
 
 # ----------------------------
 # Data Structures in Memory
 # ----------------------------
-active_registrations = []  # [{"name":..., "role":..., "ip":..., "udp_port":..., "tcp_port":...}]
-listed_items = []          # [{"seller_name":..., "item_name":..., "description":..., "start_price":..., "duration":...}]
+active_registrations = []  # [ { "name":..., "role":..., "ip":..., "udp_port":..., "tcp_port":... } ]
+listed_items = []          # [ { "item_id":..., "seller_name":..., "item_name":..., "description":..., "start_price":..., "duration":... } ]
+subscriptions = []         # [ { "buyer_name":..., "item_name":... } ]
 
 # ----------------------------
 # Persistence
@@ -38,17 +42,32 @@ def load_items():
     if os.path.exists(ITEMS_DATA_FILE):
         try:
             with open(ITEMS_DATA_FILE, "r") as f:
-                listed_items = json.load(f)
-                # Ensure duration and price are of proper types
-                for item in listed_items:
-                    item["duration"] = int(item["duration"])
+                loaded = json.load(f)
+                for item in loaded:
+                    # Ensure fields are correct types
+                    item["item_id"] = item.get("item_id", str(random.randint(10000,99999)))
                     item["start_price"] = float(item["start_price"])
+                    item["duration"] = int(item["duration"])
+                listed_items = loaded
         except:
             listed_items = []
 
 def save_items():
     with open(ITEMS_DATA_FILE, "w") as f:
         json.dump(listed_items, f, indent=2)
+
+def load_subscriptions():
+    global subscriptions
+    if os.path.exists(SUBSCRIPTIONS_DATA_FILE):
+        try:
+            with open(SUBSCRIPTIONS_DATA_FILE, "r") as f:
+                subscriptions = json.load(f)
+        except:
+            subscriptions = []
+
+def save_subscriptions():
+    with open(SUBSCRIPTIONS_DATA_FILE, "w") as f:
+        json.dump(subscriptions, f, indent=2)
 
 # ----------------------------
 # ServerApp
@@ -57,51 +76,66 @@ class ServerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Server UI")
-        self.geometry("700x500")
+        self.geometry("900x600")
         self.resizable(False, False)
 
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Log area (read-only)
-        self.log_text = ctk.CTkTextbox(main_frame, width=680, height=140, state="disabled")
+        self.log_text = ctk.CTkTextbox(main_frame, width=880, height=150, state="disabled")
         self.log_text.pack(pady=5)
 
-        # Two scrollable frames: Active Users and Listed Items
+        # Three scrollable frames: Active Users, Listed Items, Subscriptions
         container_frame = ctk.CTkFrame(main_frame)
         container_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
+        # Active Users
         users_frame = ctk.CTkFrame(container_frame)
         users_frame.pack(side="left", fill="both", expand=True, padx=5)
         ctk.CTkLabel(users_frame, text="Active Users (Max 4)").pack()
-        self.active_users_list = ctk.CTkScrollableFrame(users_frame, width=300, height=250)
+        self.active_users_list = ctk.CTkScrollableFrame(users_frame, width=250, height=300)
         self.active_users_list.pack(pady=5, fill="both", expand=True)
 
+        # Listed Items (wider)
         items_frame = ctk.CTkFrame(container_frame)
-        items_frame.pack(side="right", fill="both", expand=True, padx=5)
+        items_frame.pack(side="left", fill="both", expand=True, padx=5)
         ctk.CTkLabel(items_frame, text="Listed Items").pack()
-        self.listed_items_list = ctk.CTkScrollableFrame(items_frame, width=300, height=250)
+        self.listed_items_list = ctk.CTkScrollableFrame(items_frame, width=350, height=300)
         self.listed_items_list.pack(pady=5, fill="both", expand=True)
 
-        # Load existing data
+        # Subscriptions
+        subs_frame = ctk.CTkFrame(container_frame)
+        subs_frame.pack(side="right", fill="both", expand=True, padx=5)
+        ctk.CTkLabel(subs_frame, text="Subscriptions (Buyer -> Item)").pack()
+        self.subscriptions_list = ctk.CTkScrollableFrame(subs_frame, width=250, height=300)
+        self.subscriptions_list.pack(pady=5, fill="both", expand=True)
+
+        # Load data
         load_users()
         load_items()
+        load_subscriptions()
+
         self.refresh_active_list()
         self.refresh_items_list()
+        self.refresh_subscriptions_list()
 
         # Create the UDP socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((SERVER_IP, SERVER_PORT))
         self.add_log(f"(UDP) Server listening on {SERVER_IP}:{SERVER_PORT}")
 
+        # Start listening, item countdown, and announcements
         threading.Thread(target=self.listen_udp, daemon=True).start()
-        # Start the countdown updater
         self.update_items_countdown()
+        self.start_announcement_publisher()
+
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
         save_users()
         save_items()
+        save_subscriptions()
         self.destroy()
 
     def add_log(self, message: str):
@@ -125,28 +159,18 @@ class ServerApp(ctk.CTk):
         for item in listed_items:
             frame = ctk.CTkFrame(self.listed_items_list)
             frame.pack(fill="x", pady=2)
-            text = (f"{item['item_name']} by {item['seller_name']} | "
-                    f"Price: {item['start_price']} | Duration: {item['duration']}s")
+            text = (f"ID:{item['item_id']} | {item['item_name']} by {item['seller_name']} | "
+                    f"Price: {item['start_price']} | TimeLeft: {item['duration']}")
             ctk.CTkLabel(frame, text=text).pack(side="left", padx=5)
 
-    def update_items_countdown(self):
-        """Decrement duration for each listed item every second, remove expired items, and refresh UI."""
-        changed = False
-        for item in listed_items[:]:
-            # Decrement duration
-            try:
-                item["duration"] = int(item["duration"])
-            except:
-                continue
-            item["duration"] -= 1
-            if item["duration"] <= 0:
-                listed_items.remove(item)
-                changed = True
-        # Always refresh the listed items display to show updated countdowns
-        self.refresh_items_list()
-        if changed:
-            save_items()
-        self.after(1000, self.update_items_countdown)
+    def refresh_subscriptions_list(self):
+        for widget in self.subscriptions_list.winfo_children():
+            widget.destroy()
+        for sub in subscriptions:
+            frame = ctk.CTkFrame(self.subscriptions_list)
+            frame.pack(fill="x", pady=2)
+            text = f"{sub['buyer_name']} -> {sub['item_name']}"
+            ctk.CTkLabel(frame, text=text).pack(side="left", padx=5)
 
     def listen_udp(self):
         while True:
@@ -156,42 +180,23 @@ class ServerApp(ctk.CTk):
             parts = message.split()
             if len(parts) < 2:
                 continue
-
             cmd = parts[0].upper()
             rq = parts[1]
 
             if cmd == "REGISTER" and len(parts) >= 7:
-                # REGISTER RQ# Name Role IP UDP_port TCP_port
-                name = parts[2]
-                role = parts[3]
-                ip = parts[4]
-                udp_port = parts[5]
-                tcp_port = parts[6]
-                self.handle_register(rq, name, role, ip, udp_port, tcp_port, addr)
-
+                self.handle_register(rq, parts[2], parts[3], parts[4], parts[5], parts[6], addr)
             elif cmd == "LOGIN" and len(parts) >= 4:
-                # LOGIN RQ# Name Role
-                name = parts[2]
-                role = parts[3]
-                self.handle_login(rq, name, role, addr)
-
+                self.handle_login(rq, parts[2], parts[3], addr)
             elif cmd == "DE-REGISTER" and len(parts) >= 3:
-                # DE-REGISTER RQ# Name
-                name = parts[2]
-                self.handle_deregister(rq, name, addr)
-
+                self.handle_deregister(rq, parts[2], addr)
             elif cmd == "LIST_ITEM" and len(parts) >= 7:
-                # LIST_ITEM RQ# userName itemName itemDesc startPrice duration
-                user_name = parts[2]
-                item_name = parts[3]
-                item_desc = parts[4]
-                start_price = parts[5]
-                duration = parts[6]
-                self.handle_list_item(rq, user_name, item_name, item_desc, start_price, duration, addr)
+                self.handle_list_item(rq, parts[2], parts[3], parts[4], parts[5], parts[6], addr)
+            elif cmd == "SUBSCRIBE" and len(parts) >= 4:
+                self.handle_subscribe(rq, parts[2], parts[3], addr)
+            elif cmd == "DE-SUBSCRIBE" and len(parts) >= 4:
+                self.handle_de_subscribe(rq, parts[2], parts[3], addr)
 
-    # ---------------------------------------------------------------------
-    # Handlers
-    # ---------------------------------------------------------------------
+    # ----- Handlers -----
 
     def handle_register(self, rq, name, role, ip, udp_port, tcp_port, addr):
         # Check duplicates
@@ -233,28 +238,10 @@ class ServerApp(ctk.CTk):
             resp = f"LOGIN_OK {rq}"
             self.sock.sendto(resp.encode(), addr)
             self.add_log(f"(UDP) Login success for {name} ({role})")
-            # After login success, send user items so they see previously listed items
-            self.send_user_items(rq, found_user, addr)
         else:
             resp = f"LOGIN_FAIL {rq} NotFound"
             self.sock.sendto(resp.encode(), addr)
             self.add_log(f"(UDP) Login fail for {name} ({role})")
-
-    def send_user_items(self, rq, user, addr):
-        """Send the user all their previously listed items."""
-        user_name = user["name"]
-        # Filter items by seller_name == user_name
-        user_list = [i for i in listed_items if i["seller_name"] == user_name]
-        count = len(user_list)
-        # Format: ITEMS RQ# userName count itemName startPrice duration itemName startPrice duration...
-        parts = ["ITEMS", rq, user_name, str(count)]
-        for it in user_list:
-            parts.append(it["item_name"])
-            parts.append(str(it["start_price"]))
-            parts.append(str(it["duration"]))
-        msg = " ".join(parts)
-        self.sock.sendto(msg.encode(), addr)
-        self.add_log(f"(UDP) Sent user items for {user_name}, total {count} item(s).")
 
     def handle_deregister(self, rq, name, addr):
         removed = False
@@ -273,7 +260,6 @@ class ServerApp(ctk.CTk):
             self.add_log(f"(UDP) De-register requested but user not found: {name}")
 
     def handle_list_item(self, rq, user_name, item_name, item_desc, start_price, duration, addr):
-        # Find user by name
         user = None
         for u in active_registrations:
             if u["name"] == user_name:
@@ -284,15 +270,13 @@ class ServerApp(ctk.CTk):
             self.sock.sendto(resp.encode(), addr)
             self.add_log("(UDP) LIST_ITEM denied (username not found).")
             return
-
         if user["role"].lower() != "seller":
             resp = f"LIST-DENIED {rq} NotSeller"
             self.sock.sendto(resp.encode(), addr)
             self.add_log("(UDP) LIST_ITEM denied (user not a seller).")
             return
 
-        # Validate the input:
-        # - item_name must be a non-empty string that is not purely numeric.
+        # Validate
         if not item_name or item_name.isdigit():
             resp = f"LIST-DENIED {rq} InvalidName"
             self.sock.sendto(resp.encode(), addr)
@@ -313,7 +297,7 @@ class ServerApp(ctk.CTk):
             self.add_log("(UDP) LIST_ITEM denied (invalid duration).")
             return
 
-        # Check how many items this user already has
+        # Check capacity
         user_items_count = sum(1 for i in listed_items if i["seller_name"] == user_name)
         if user_items_count >= 4:
             resp = f"LIST-DENIED {rq} SellerAtCapacity"
@@ -321,8 +305,9 @@ class ServerApp(ctk.CTk):
             self.add_log("(UDP) LIST_ITEM denied (seller at capacity).")
             return
 
-        # Accept the listing
+        new_id = str(random.randint(10000,99999))
         new_item = {
+            "item_id": new_id,
             "seller_name": user["name"],
             "item_name": item_name,
             "description": item_desc,
@@ -335,6 +320,88 @@ class ServerApp(ctk.CTk):
         resp = f"ITEM_LISTED {rq}"
         self.sock.sendto(resp.encode(), addr)
         self.add_log(f"(UDP) Item listed: {item_name} by {user['name']}")
+
+    def handle_subscribe(self, rq, buyer_name, item_name, addr):
+        buyer = None
+        for user in active_registrations:
+            if user["name"] == buyer_name:
+                buyer = user
+                break
+        if not buyer or buyer["role"].lower() != "buyer":
+            resp = f"SUBSCRIPTION-DENIED {rq} NotBuyerOrNotFound"
+            self.sock.sendto(resp.encode(), addr)
+            self.add_log(f"(UDP) SUBSCRIBE denied for {buyer_name}, not a buyer or not found.")
+            return
+
+        # Already subscribed?
+        already = any((sub["buyer_name"] == buyer_name and sub["item_name"] == item_name) for sub in subscriptions)
+        if already:
+            resp = f"SUBSCRIPTION-DENIED {rq} AlreadySubscribed"
+            self.sock.sendto(resp.encode(), addr)
+            self.add_log(f"(UDP) SUBSCRIBE denied, already subscribed: {buyer_name} -> {item_name}")
+            return
+
+        new_sub = { "buyer_name": buyer_name, "item_name": item_name }
+        subscriptions.append(new_sub)
+        save_subscriptions()
+        self.refresh_subscriptions_list()
+
+        resp = f"SUBSCRIBED {rq}"
+        self.sock.sendto(resp.encode(), addr)
+        self.add_log(f"(UDP) SUBSCRIBE success: {buyer_name} -> {item_name}")
+
+    def handle_de_subscribe(self, rq, buyer_name, item_name, addr):
+        found = None
+        for sub in subscriptions:
+            if sub["buyer_name"] == buyer_name and sub["item_name"] == item_name:
+                found = sub
+                break
+        if not found:
+            resp = f"SUBSCRIPTION-DENIED {rq} NoSubscription"
+            self.sock.sendto(resp.encode(), addr)
+            self.add_log(f"(UDP) DE-SUBSCRIBE denied, not subscribed: {buyer_name} -> {item_name}")
+            return
+
+        subscriptions.remove(found)
+        save_subscriptions()
+        self.refresh_subscriptions_list()
+
+        resp = f"SUBSCRIBED {rq}"
+        self.sock.sendto(resp.encode(), addr)
+        self.add_log(f"(UDP) DE-SUBSCRIBE success: {buyer_name} -> {item_name}")
+
+    # ----- Background tasks -----
+
+    def update_items_countdown(self):
+        changed = False
+        for item in listed_items[:]:
+            item["duration"] = max(0, int(item["duration"]) - 1)
+            if item["duration"] <= 0:
+                listed_items.remove(item)
+                changed = True
+        if changed:
+            save_items()
+        self.refresh_items_list()
+        self.after(1000, self.update_items_countdown)
+
+    def start_announcement_publisher(self):
+        t = threading.Thread(target=self.publish_announcements_loop, daemon=True)
+        t.start()
+
+    def publish_announcements_loop(self):
+        while True:
+            # For each listed item, find all buyers subscribed to item["item_name"]
+            for item in listed_items:
+                subs_for_item = [s for s in subscriptions if s["item_name"] == item["item_name"]]
+                for s in subs_for_item:
+                    buyer_reg = next((b for b in active_registrations if b["name"] == s["buyer_name"]), None)
+                    if not buyer_reg:
+                        continue
+                    # Build announcement
+                    msg = (f"AUCTION_ANNOUNCE {item['item_id']} {item['item_name']} "
+                           f"{item['description']} {item['start_price']} {item['duration']}")
+                    self.sock.sendto(msg.encode(), (buyer_reg["ip"], int(buyer_reg["udp_port"])))
+            time.sleep(5)
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("System")

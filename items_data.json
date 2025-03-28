@@ -1,9 +1,10 @@
 [
   {
+    "item_id": "36448",
     "seller_name": "Taylor",
-    "item_name": "lime",
-    "description": "56",
-    "start_price": 24.0,
-    "duration": 120
+    "item_name": "apple",
+    "description": "a",
+    "start_price": 12.0,
+    "duration": 40
   }
 ]

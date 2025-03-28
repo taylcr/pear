@@ -3,14 +3,14 @@
     "name": "Becky",
     "role": "Buyer",
     "ip": "127.0.0.1",
-    "udp_port": "51308",
-    "tcp_port": "49950"
+    "udp_port": "56661",
+    "tcp_port": "46928"
   },
   {
     "name": "Taylor",
     "role": "Seller",
     "ip": "127.0.0.1",
-    "udp_port": "51308",
-    "tcp_port": "41370"
+    "udp_port": "56661",
+    "tcp_port": "47162"
   }
 ]
